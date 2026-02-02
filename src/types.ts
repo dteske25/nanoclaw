@@ -54,6 +54,19 @@ export interface NewMessage {
   timestamp: string;
 }
 
+/**
+ * Generic incoming message interface for storing messages from any platform.
+ */
+export interface IncomingMessage {
+  id: string;
+  channelId: string;
+  senderId: string;
+  senderName: string;
+  content: string;
+  timestamp: string;
+  isFromMe: boolean;
+}
+
 export interface ScheduledTask {
   id: string;
   group_folder: string;

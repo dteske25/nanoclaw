@@ -1,11 +1,6 @@
-import makeWASocket, {
-  useMultiFileAuthState,
-  DisconnectReason,
-  makeCacheableSignalKeyStore,
-  WASocket
-} from '@whiskeysockets/baileys';
+import { Client, GatewayIntentBits, Events, TextChannel, Message, ChannelType } from 'discord.js';
 import pino from 'pino';
-import { exec, execSync } from 'child_process';
+import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -19,30 +14,34 @@ import {
   IPC_POLL_INTERVAL,
   TIMEZONE
 } from './config.js';
-import { RegisteredGroup, Session, NewMessage } from './types.js';
+import { RegisteredGroup, Session, NewMessage, IncomingMessage } from './types.js';
 import { initDatabase, storeMessage, storeChatMetadata, getNewMessages, getMessagesSince, getAllTasks, getTaskById, updateChatName, getAllChats, getLastGroupSync, setLastGroupSync } from './db.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { runContainerAgent, writeTasksSnapshot, writeGroupsSnapshot, AvailableGroup } from './container-runner.js';
 import { loadJson, saveJson } from './utils.js';
 
-const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const GUILD_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const TOKEN_FILE = path.join(STORE_DIR, 'discord_token');
 
 const logger = pino({
   level: process.env.LOG_LEVEL || 'info',
   transport: { target: 'pino-pretty', options: { colorize: true } }
 });
 
-let sock: WASocket;
+let client: Client;
 let lastTimestamp = '';
 let sessions: Session = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 
-async function setTyping(jid: string, isTyping: boolean): Promise<void> {
+async function setTyping(channelId: string, _isTyping: boolean): Promise<void> {
   try {
-    await sock.sendPresenceUpdate(isTyping ? 'composing' : 'paused', jid);
+    const channel = client.channels.cache.get(channelId);
+    if (channel?.isTextBased() && 'sendTyping' in channel) {
+      await (channel as TextChannel).sendTyping();
+    }
   } catch (err) {
-    logger.debug({ jid, err }, 'Failed to update typing status');
+    logger.debug({ channelId, err }, 'Failed to update typing status');
   }
 }
 
@@ -61,70 +60,83 @@ function saveState(): void {
   saveJson(path.join(DATA_DIR, 'sessions.json'), sessions);
 }
 
-function registerGroup(jid: string, group: RegisteredGroup): void {
-  registeredGroups[jid] = group;
+function registerGroup(channelId: string, group: RegisteredGroup): void {
+  registeredGroups[channelId] = group;
   saveJson(path.join(DATA_DIR, 'registered_groups.json'), registeredGroups);
 
   // Create group folder
   const groupDir = path.join(DATA_DIR, '..', 'groups', group.folder);
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
 
-  logger.info({ jid, name: group.name, folder: group.folder }, 'Group registered');
+  logger.info({ channelId, name: group.name, folder: group.folder }, 'Group registered');
 }
 
 /**
- * Sync group metadata from WhatsApp.
- * Fetches all participating groups and stores their names in the database.
+ * Sync guild/channel metadata from Discord.
+ * Fetches all accessible channels and stores their names in the database.
  * Called on startup, daily, and on-demand via IPC.
  */
-async function syncGroupMetadata(force = false): Promise<void> {
+async function syncGuildMetadata(force = false): Promise<void> {
   // Check if we need to sync (skip if synced recently, unless forced)
   if (!force) {
     const lastSync = getLastGroupSync();
     if (lastSync) {
       const lastSyncTime = new Date(lastSync).getTime();
       const now = Date.now();
-      if (now - lastSyncTime < GROUP_SYNC_INTERVAL_MS) {
-        logger.debug({ lastSync }, 'Skipping group sync - synced recently');
+      if (now - lastSyncTime < GUILD_SYNC_INTERVAL_MS) {
+        logger.debug({ lastSync }, 'Skipping guild sync - synced recently');
         return;
       }
     }
   }
 
   try {
-    logger.info('Syncing group metadata from WhatsApp...');
-    const groups = await sock.groupFetchAllParticipating();
+    logger.info('Syncing guild metadata from Discord...');
 
     let count = 0;
-    for (const [jid, metadata] of Object.entries(groups)) {
-      if (metadata.subject) {
-        updateChatName(jid, metadata.subject);
+    for (const [, guild] of client.guilds.cache) {
+      // Fetch all channels in the guild
+      const channels = guild.channels.cache;
+      for (const [channelId, channel] of channels) {
+        if (channel.type === ChannelType.GuildText || channel.type === ChannelType.PublicThread || channel.type === ChannelType.PrivateThread) {
+          const name = `${guild.name} > #${channel.name}`;
+          updateChatName(channelId, name);
+          count++;
+        }
+      }
+    }
+
+    // Also track DM channels if any
+    for (const [channelId, channel] of client.channels.cache) {
+      if (channel.type === ChannelType.DM && 'recipient' in channel) {
+        const dmChannel = channel as any;
+        updateChatName(channelId, `DM: ${dmChannel.recipient?.username || 'Unknown'}`);
         count++;
       }
     }
 
     setLastGroupSync();
-    logger.info({ count }, 'Group metadata synced');
+    logger.info({ count }, 'Guild metadata synced');
   } catch (err) {
-    logger.error({ err }, 'Failed to sync group metadata');
+    logger.error({ err }, 'Failed to sync guild metadata');
   }
 }
 
 /**
- * Get available groups list for the agent.
- * Returns groups ordered by most recent activity.
+ * Get available channels list for the agent.
+ * Returns channels ordered by most recent activity.
  */
 function getAvailableGroups(): AvailableGroup[] {
   const chats = getAllChats();
-  const registeredJids = new Set(Object.keys(registeredGroups));
+  const registeredIds = new Set(Object.keys(registeredGroups));
 
   return chats
-    .filter(c => c.jid !== '__group_sync__' && c.jid.endsWith('@g.us'))
+    .filter(c => c.jid !== '__group_sync__')
     .map(c => ({
-      jid: c.jid,
+      jid: c.jid, // Keep 'jid' field name for compatibility with existing code
       name: c.name,
       lastActivity: c.last_message_time,
-      isRegistered: registeredJids.has(c.jid)
+      isRegistered: registeredIds.has(c.jid)
     }));
 }
 
@@ -167,7 +179,7 @@ async function processMessage(msg: NewMessage): Promise<void> {
   }
 }
 
-async function runAgent(group: RegisteredGroup, prompt: string, chatJid: string): Promise<string | null> {
+async function runAgent(group: RegisteredGroup, prompt: string, channelId: string): Promise<string | null> {
   const isMain = group.folder === MAIN_GROUP_FOLDER;
   const sessionId = sessions[group.folder];
 
@@ -192,7 +204,7 @@ async function runAgent(group: RegisteredGroup, prompt: string, chatJid: string)
       prompt,
       sessionId,
       groupFolder: group.folder,
-      chatJid,
+      chatJid: channelId, // Keep 'chatJid' name for compatibility
       isMain
     });
 
@@ -213,13 +225,50 @@ async function runAgent(group: RegisteredGroup, prompt: string, chatJid: string)
   }
 }
 
-async function sendMessage(jid: string, text: string): Promise<void> {
+async function sendMessage(channelId: string, text: string): Promise<void> {
   try {
-    await sock.sendMessage(jid, { text });
-    logger.info({ jid, length: text.length }, 'Message sent');
+    const channel = client.channels.cache.get(channelId);
+    if (channel?.isTextBased() && 'send' in channel) {
+      // Discord has a 2000 character limit, split if needed
+      const chunks = splitMessage(text, 2000);
+      for (const chunk of chunks) {
+        await (channel as TextChannel).send(chunk);
+      }
+      logger.info({ channelId, length: text.length }, 'Message sent');
+    } else {
+      logger.warn({ channelId }, 'Channel not found or not text-based');
+    }
   } catch (err) {
-    logger.error({ jid, err }, 'Failed to send message');
+    logger.error({ channelId, err }, 'Failed to send message');
   }
+}
+
+function splitMessage(text: string, maxLength: number): string[] {
+  if (text.length <= maxLength) return [text];
+
+  const chunks: string[] = [];
+  let remaining = text;
+
+  while (remaining.length > 0) {
+    if (remaining.length <= maxLength) {
+      chunks.push(remaining);
+      break;
+    }
+
+    // Find a good split point (newline or space)
+    let splitAt = remaining.lastIndexOf('\n', maxLength);
+    if (splitAt === -1 || splitAt < maxLength / 2) {
+      splitAt = remaining.lastIndexOf(' ', maxLength);
+    }
+    if (splitAt === -1 || splitAt < maxLength / 2) {
+      splitAt = maxLength;
+    }
+
+    chunks.push(remaining.slice(0, splitAt));
+    remaining = remaining.slice(splitAt).trimStart();
+  }
+
+  return chunks;
 }
 
 function startIpcWatcher(): void {
@@ -254,13 +303,13 @@ function startIpcWatcher(): void {
             try {
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
               if (data.type === 'message' && data.chatJid && data.text) {
-                // Authorization: verify this group can send to this chatJid
+                // Authorization: verify this group can send to this channel
                 const targetGroup = registeredGroups[data.chatJid];
                 if (isMain || (targetGroup && targetGroup.folder === sourceGroup)) {
                   await sendMessage(data.chatJid, `${ASSISTANT_NAME}: ${data.text}`);
-                  logger.info({ chatJid: data.chatJid, sourceGroup }, 'IPC message sent');
+                  logger.info({ channelId: data.chatJid, sourceGroup }, 'IPC message sent');
                 } else {
-                  logger.warn({ chatJid: data.chatJid, sourceGroup }, 'Unauthorized IPC message attempt blocked');
+                  logger.warn({ channelId: data.chatJid, sourceGroup }, 'Unauthorized IPC message attempt blocked');
                 }
               }
               fs.unlinkSync(filePath);
@@ -341,12 +390,12 @@ async function processTaskIpc(
           break;
         }
 
-        // Resolve the correct JID for the target group (don't trust IPC payload)
-        const targetJid = Object.entries(registeredGroups).find(
+        // Resolve the correct channel ID for the target group (don't trust IPC payload)
+        const targetChannelId = Object.entries(registeredGroups).find(
           ([, group]) => group.folder === targetGroup
         )?.[0];
 
-        if (!targetJid) {
+        if (!targetChannelId) {
           logger.warn({ targetGroup }, 'Cannot schedule task: target group not registered');
           break;
         }
@@ -385,7 +434,7 @@ async function processTaskIpc(
         createTask({
           id: taskId,
           group_folder: targetGroup,
-          chat_jid: targetJid,
+          chat_jid: targetChannelId,
           prompt: data.prompt,
           schedule_type: scheduleType,
           schedule_value: data.schedule_value,
@@ -437,8 +486,8 @@ async function processTaskIpc(
     case 'refresh_groups':
       // Only main group can request a refresh
       if (isMain) {
-        logger.info({ sourceGroup }, 'Group metadata refresh requested via IPC');
-        await syncGroupMetadata(true);
+        logger.info({ sourceGroup }, 'Guild metadata refresh requested via IPC');
+        await syncGuildMetadata(true);
         // Write updated snapshot immediately
         const availableGroups = getAvailableGroups();
         const { writeGroupsSnapshot: writeGroups } = await import('./container-runner.js');
@@ -472,78 +521,88 @@ async function processTaskIpc(
   }
 }
 
-async function connectWhatsApp(): Promise<void> {
-  const authDir = path.join(STORE_DIR, 'auth');
-  fs.mkdirSync(authDir, { recursive: true });
+async function connectDiscord(): Promise<void> {
+  // Load token from file or environment
+  let token = process.env.DISCORD_TOKEN;
+  if (!token && fs.existsSync(TOKEN_FILE)) {
+    token = fs.readFileSync(TOKEN_FILE, 'utf-8').trim();
+  }
 
-  const { state, saveCreds } = await useMultiFileAuthState(authDir);
+  if (!token) {
+    logger.error('Discord token not found. Run `npm run auth` to set up authentication.');
+    process.exit(1);
+  }
 
-  sock = makeWASocket({
-    auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
-    printQRInTerminal: false,
-    logger,
-    browser: ['NanoClaw', 'Chrome', '1.0.0']
+  client = new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent,
+      GatewayIntentBits.DirectMessages,
+    ],
   });
 
-  sock.ev.on('connection.update', (update) => {
-    const { connection, lastDisconnect, qr } = update;
+  client.once(Events.ClientReady, (readyClient) => {
+    logger.info({ user: readyClient.user.tag, guilds: readyClient.guilds.cache.size }, 'Connected to Discord');
 
-    if (qr) {
-      const msg = 'WhatsApp authentication required. Run /setup in Claude Code.';
-      logger.error(msg);
-      exec(`osascript -e 'display notification "${msg}" with title "NanoClaw" sound name "Basso"'`);
-      setTimeout(() => process.exit(1), 1000);
+    // Sync guild metadata on startup (respects 24h cache)
+    syncGuildMetadata().catch(err => logger.error({ err }, 'Initial guild sync failed'));
+
+    // Set up daily sync timer
+    setInterval(() => {
+      syncGuildMetadata().catch(err => logger.error({ err }, 'Periodic guild sync failed'));
+    }, GUILD_SYNC_INTERVAL_MS);
+
+    startSchedulerLoop({
+      sendMessage,
+      registeredGroups: () => registeredGroups,
+      getSessions: () => sessions
+    });
+    startIpcWatcher();
+    startMessageLoop();
+  });
+
+  client.on(Events.MessageCreate, (message: Message) => {
+    // Ignore bot messages
+    if (message.author.bot) return;
+
+    const channelId = message.channel.id;
+    const timestamp = message.createdAt.toISOString();
+
+    // Always store chat metadata for channel discovery
+    let channelName = 'Unknown';
+    if (message.guild && 'name' in message.channel) {
+      channelName = `${message.guild.name} > #${(message.channel as TextChannel).name}`;
+    } else if (message.channel.type === ChannelType.DM) {
+      channelName = `DM: ${message.author.username}`;
     }
+    storeChatMetadata(channelId, timestamp, channelName);
 
-    if (connection === 'close') {
-      const reason = (lastDisconnect?.error as any)?.output?.statusCode;
-      const shouldReconnect = reason !== DisconnectReason.loggedOut;
-      logger.info({ reason, shouldReconnect }, 'Connection closed');
-
-      if (shouldReconnect) {
-        logger.info('Reconnecting...');
-        connectWhatsApp();
-      } else {
-        logger.info('Logged out. Run /setup to re-authenticate.');
-        process.exit(0);
-      }
-    } else if (connection === 'open') {
-      logger.info('Connected to WhatsApp');
-      // Sync group metadata on startup (respects 24h cache)
-      syncGroupMetadata().catch(err => logger.error({ err }, 'Initial group sync failed'));
-      // Set up daily sync timer
-      setInterval(() => {
-        syncGroupMetadata().catch(err => logger.error({ err }, 'Periodic group sync failed'));
-      }, GROUP_SYNC_INTERVAL_MS);
-      startSchedulerLoop({
-        sendMessage,
-        registeredGroups: () => registeredGroups,
-        getSessions: () => sessions
-      });
-      startIpcWatcher();
-      startMessageLoop();
+    // Only store full message content for registered channels
+    if (registeredGroups[channelId]) {
+      const incomingMsg: IncomingMessage = {
+        id: message.id,
+        channelId,
+        senderId: message.author.id,
+        senderName: message.author.displayName || message.author.username,
+        content: message.content,
+        timestamp,
+        isFromMe: message.author.id === client.user?.id
+      };
+      storeMessage(incomingMsg);
     }
   });
 
-  sock.ev.on('creds.update', saveCreds);
-
-  sock.ev.on('messages.upsert', ({ messages }) => {
-    for (const msg of messages) {
-      if (!msg.message) continue;
-      const chatJid = msg.key.remoteJid;
-      if (!chatJid || chatJid === 'status@broadcast') continue;
-
-      const timestamp = new Date(Number(msg.messageTimestamp) * 1000).toISOString();
-
-      // Always store chat metadata for group discovery
-      storeChatMetadata(chatJid, timestamp);
-
-      // Only store full message content for registered groups
-      if (registeredGroups[chatJid]) {
-        storeMessage(msg, chatJid, msg.key.fromMe || false, msg.pushName || undefined);
-      }
-    }
+  client.on(Events.Error, (error) => {
+    logger.error({ error }, 'Discord client error');
   });
+
+  try {
+    await client.login(token);
+  } catch (err) {
+    logger.error({ err }, 'Failed to connect to Discord');
+    process.exit(1);
+  }
 }
 
 async function startMessageLoop(): Promise<void> {
@@ -551,8 +610,8 @@ async function startMessageLoop(): Promise<void> {
 
   while (true) {
     try {
-      const jids = Object.keys(registeredGroups);
-      const { messages } = getNewMessages(jids, lastTimestamp, ASSISTANT_NAME);
+      const channelIds = Object.keys(registeredGroups);
+      const { messages } = getNewMessages(channelIds, lastTimestamp, ASSISTANT_NAME);
 
       if (messages.length > 0) logger.info({ count: messages.length }, 'New messages');
       for (const msg of messages) {
@@ -603,7 +662,7 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
-  await connectWhatsApp();
+  await connectDiscord();
 }
 
 main().catch(err => {
