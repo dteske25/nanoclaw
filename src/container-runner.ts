@@ -1,6 +1,6 @@
 /**
  * Container Runner for NanoClaw
- * Spawns agent execution in Apple Container and handles IPC
+ * Spawns agent execution in Docker and handles IPC
  */
 
 import { spawn } from 'child_process';
@@ -85,7 +85,6 @@ function buildVolumeMounts(group: RegisteredGroup, isMain: boolean): VolumeMount
     });
 
     // Global memory directory (read-only for non-main)
-    // Apple Container only supports directory mounts, not file mounts
     const globalDir = path.join(GROUPS_DIR, 'global');
     if (fs.existsSync(globalDir)) {
       mounts.push({
@@ -117,7 +116,7 @@ function buildVolumeMounts(group: RegisteredGroup, isMain: boolean): VolumeMount
     readonly: false
   });
 
-  // Environment file directory (workaround for Apple Container -i env var bug)
+  // Environment file directory
   // Only expose specific auth variables needed by Claude Code, not the entire .env
   const envDir = path.join(DATA_DIR, 'env');
   fs.mkdirSync(envDir, { recursive: true });
@@ -159,7 +158,7 @@ function buildVolumeMounts(group: RegisteredGroup, isMain: boolean): VolumeMount
 function buildContainerArgs(mounts: VolumeMount[]): string[] {
   const args: string[] = ['run', '-i', '--rm'];
 
-  // Apple Container: --mount for readonly, -v for read-write
+  // Docker: use --mount for all binds (supports readonly option)
   for (const mount of mounts) {
     if (mount.readonly) {
       args.push('--mount', `type=bind,source=${mount.hostPath},target=${mount.containerPath},readonly`);
@@ -201,7 +200,7 @@ export async function runContainerAgent(
   fs.mkdirSync(logsDir, { recursive: true });
 
   return new Promise((resolve) => {
-    const container = spawn('container', containerArgs, {
+    const container = spawn('docker', containerArgs, {
       stdio: ['pipe', 'pipe', 'pipe']
     });
 
