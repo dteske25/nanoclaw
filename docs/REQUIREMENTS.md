@@ -177,7 +177,7 @@ A personal Claude assistant accessible via Discord, with minimal custom code.
 These are the creator's settings, stored here for reference:
 
 - **Trigger**: Discord @mention (translated to `@nano`)
-- **Response prefix**: `nano:`
+- **Response prefix**: None
 - **Persona**: Default Claude (no custom personality)
 - **Main channel**: DMs with the bot
 
