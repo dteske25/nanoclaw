@@ -24,7 +24,6 @@ export interface DiscordChannelOpts {
 
 export class DiscordChannel implements Channel {
   name = 'discord';
-  prefixAssistantName = false;
 
   private client: Client;
   private token: string;

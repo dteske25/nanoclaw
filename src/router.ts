@@ -22,10 +22,7 @@ export function stripInternalTags(text: string): string {
 
 export function formatOutbound(channel: Channel, rawText: string): string {
   const text = stripInternalTags(rawText);
-  if (!text) return '';
-  const prefix =
-    channel.prefixAssistantName !== false ? `${ASSISTANT_NAME}: ` : '';
-  return `${prefix}${text}`;
+  return text ?? "";
 }
 
 export function routeOutbound(

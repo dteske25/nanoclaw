@@ -161,38 +161,6 @@ describe('stripInternalTags', () => {
   });
 });
 
-describe('formatOutbound', () => {
-  const waChannel = { prefixAssistantName: true } as Channel;
-  const noPrefixChannel = { prefixAssistantName: false } as Channel;
-  const defaultChannel = {} as Channel;
-
-  it('prefixes with assistant name when channel wants it', () => {
-    expect(formatOutbound(waChannel, 'hello world')).toBe(
-      `${ASSISTANT_NAME}: hello world`,
-    );
-  });
-
-  it('does not prefix when channel opts out', () => {
-    expect(formatOutbound(noPrefixChannel, 'hello world')).toBe('hello world');
-  });
-
-  it('defaults to prefixing when prefixAssistantName is undefined', () => {
-    expect(formatOutbound(defaultChannel, 'hello world')).toBe(
-      `${ASSISTANT_NAME}: hello world`,
-    );
-  });
-
-  it('returns empty string when all text is internal', () => {
-    expect(formatOutbound(waChannel, '<internal>hidden</internal>')).toBe('');
-  });
-
-  it('strips internal tags and prefixes remaining text', () => {
-    expect(
-      formatOutbound(waChannel, '<internal>thinking</internal>The answer is 42'),
-    ).toBe(`${ASSISTANT_NAME}: The answer is 42`);
-  });
-});
-
 // --- Trigger gating with requiresTrigger flag ---
 
 describe('trigger gating (requiresTrigger interaction)', () => {
