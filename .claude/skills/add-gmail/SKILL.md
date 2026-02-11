@@ -1,13 +1,13 @@
 ---
 name: add-gmail
-description: Add Gmail integration to NanoClaw. Can be configured as a tool (agent reads/sends emails when triggered from WhatsApp) or as a full channel (emails can trigger the agent, schedule tasks, and receive replies). Guides through GCP OAuth setup and implements the integration.
+description: Add Gmail integration to NanoClaw. Can be configured as a tool (agent reads/sends emails when triggered from Discord) or as a full channel (emails can trigger the agent, schedule tasks, and receive replies). Guides through GCP OAuth setup and implements the integration.
 ---
 
 # Add Gmail Integration
 
 This skill adds Gmail capabilities to NanoClaw. It can be configured in two modes:
 
-1. **Tool Mode** - Agent can read/send emails, but only when triggered from WhatsApp
+1. **Tool Mode** - Agent can read/send emails, but only when triggered from Discord
 2. **Channel Mode** - Emails can trigger the agent, schedule tasks, and receive email replies
 
 ## Initial Questions
@@ -18,7 +18,7 @@ Ask the user:
 >
 > **Option 1: Tool Mode**
 > - Agent can read and send emails when you ask it to
-> - Triggered only from WhatsApp (e.g., "@Andy check my email" or "@Andy send an email to...")
+> - Triggered only from Discord (e.g., "@Andy check my email" or "@Andy send an email to...")
 > - Simpler setup, no email polling
 >
 > **Option 2: Channel Mode**

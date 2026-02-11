@@ -102,34 +102,34 @@ describe('formatMessages', () => {
 // --- TRIGGER_PATTERN ---
 
 describe('TRIGGER_PATTERN', () => {
-  it('matches @Andy at start of message', () => {
-    expect(TRIGGER_PATTERN.test('@Andy hello')).toBe(true);
+  it('matches @nano at start of message', () => {
+    expect(TRIGGER_PATTERN.test('@nano hello')).toBe(true);
   });
 
   it('matches case-insensitively', () => {
-    expect(TRIGGER_PATTERN.test('@andy hello')).toBe(true);
-    expect(TRIGGER_PATTERN.test('@ANDY hello')).toBe(true);
+    expect(TRIGGER_PATTERN.test('@nano hello')).toBe(true);
+    expect(TRIGGER_PATTERN.test('@NANO hello')).toBe(true);
   });
 
   it('does not match when not at start of message', () => {
-    expect(TRIGGER_PATTERN.test('hello @Andy')).toBe(false);
+    expect(TRIGGER_PATTERN.test('hello @nano')).toBe(false);
   });
 
-  it('does not match partial name like @Andrew (word boundary)', () => {
-    expect(TRIGGER_PATTERN.test('@Andrew hello')).toBe(false);
+  it('does not match partial name like @nanobot (word boundary)', () => {
+    expect(TRIGGER_PATTERN.test('@nanobot hello')).toBe(false);
   });
 
   it('matches with word boundary before apostrophe', () => {
-    expect(TRIGGER_PATTERN.test("@Andy's thing")).toBe(true);
+    expect(TRIGGER_PATTERN.test("@nano's thing")).toBe(true);
   });
 
-  it('matches @Andy alone (end of string is a word boundary)', () => {
-    expect(TRIGGER_PATTERN.test('@Andy')).toBe(true);
+  it('matches @nano alone (end of string is a word boundary)', () => {
+    expect(TRIGGER_PATTERN.test('@nano')).toBe(true);
   });
 
   it('matches with leading whitespace after trim', () => {
     // The actual usage trims before testing: TRIGGER_PATTERN.test(m.content.trim())
-    expect(TRIGGER_PATTERN.test('@Andy hey'.trim())).toBe(true);
+    expect(TRIGGER_PATTERN.test('@nano hey'.trim())).toBe(true);
   });
 });
 
@@ -235,7 +235,7 @@ describe('trigger gating (requiresTrigger interaction)', () => {
   });
 
   it('non-main group with requiresTrigger=true processes when trigger present', () => {
-    const msgs = [makeMsg({ content: '@Andy do something' })];
+    const msgs = [makeMsg({ content: '@nano do something' })];
     expect(shouldProcess(false, true, msgs)).toBe(true);
   });
 

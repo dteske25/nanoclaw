@@ -1,6 +1,6 @@
 # NanoClaw Specification
 
-A personal Claude assistant accessible via WhatsApp, with persistent memory per conversation, scheduled tasks, and email integration.
+A personal Claude assistant accessible via Discord, with persistent memory per conversation, scheduled tasks, and email integration.
 
 ---
 
@@ -29,8 +29,8 @@ A personal Claude assistant accessible via WhatsApp, with persistent memory per 
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                      │
 │  ┌──────────────┐                     ┌────────────────────┐        │
-│  │  WhatsApp    │────────────────────▶│   SQLite Database  │        │
-│  │  (baileys)   │◀────────────────────│   (messages.db)    │        │
+│  │  Discord     │────────────────────▶│   SQLite Database  │        │
+│  │ (discord.js) │◀────────────────────│   (messages.db)    │        │
 │  └──────────────┘   store/send        └─────────┬──────────┘        │
 │                                                  │                   │
 │         ┌────────────────────────────────────────┘                   │
@@ -45,7 +45,7 @@ A personal Claude assistant accessible via WhatsApp, with persistent memory per 
 │                       │ spawns container                             │
 │                       ▼                                              │
 ├─────────────────────────────────────────────────────────────────────┤
-│                  APPLE CONTAINER (Linux VM)                          │
+│                  DOCKER CONTAINER (Linux)                            │
 ├─────────────────────────────────────────────────────────────────────┤
 │  ┌──────────────────────────────────────────────────────────────┐   │
 │  │                    AGENT RUNNER                               │   │
@@ -73,9 +73,9 @@ A personal Claude assistant accessible via WhatsApp, with persistent memory per 
 
 | Component | Technology | Purpose |
 |-----------|------------|---------|
-| WhatsApp Connection | Node.js (@whiskeysockets/baileys) | Connect to WhatsApp, send/receive messages |
+| Discord Connection | Node.js (discord.js) | Connect to Discord, send/receive messages |
 | Message Storage | SQLite (better-sqlite3) | Store messages for polling |
-| Container Runtime | Apple Container | Isolated Linux VMs for agent execution |
+| Container Runtime | Docker | Isolated containers for agent execution |
 | Agent | @anthropic-ai/claude-agent-sdk (0.2.29) | Run Claude with tools and MCP servers |
 | Browser Automation | agent-browser + Chromium | Web interaction and screenshots |
 | Runtime | Node.js 20+ | Host process for routing and scheduling |
@@ -100,7 +100,7 @@ nanoclaw/
 ├── src/
 │   ├── index.ts                   # Orchestrator: state, message loop, agent invocation
 │   ├── channels/
-│   │   └── whatsapp.ts            # WhatsApp connection, auth, send/receive
+│   │   └── discord.ts             # Discord connection, auth, send/receive
 │   ├── ipc.ts                     # IPC watcher and task processing
 │   ├── router.ts                  # Message formatting and outbound routing
 │   ├── config.ts                  # Configuration constants
@@ -109,9 +109,8 @@ nanoclaw/
 │   ├── db.ts                      # SQLite database initialization and queries
 │   ├── group-queue.ts             # Per-group queue with global concurrency limit
 │   ├── mount-security.ts          # Mount allowlist validation for containers
-│   ├── whatsapp-auth.ts           # Standalone WhatsApp authentication
 │   ├── task-scheduler.ts          # Runs scheduled tasks when due
-│   └── container-runner.ts        # Spawns agents in Apple Containers
+│   └── container-runner.ts        # Spawns agents in Docker containers
 │
 ├── container/
 │   ├── Dockerfile                 # Container image (runs as 'node' user, includes Claude Code CLI)
@@ -132,7 +131,6 @@ nanoclaw/
 │       ├── setup/SKILL.md              # /setup - First-time installation
 │       ├── customize/SKILL.md          # /customize - Add capabilities
 │       ├── debug/SKILL.md              # /debug - Container debugging
-│       ├── add-telegram/SKILL.md       # /add-telegram - Telegram channel
 │       ├── add-gmail/SKILL.md          # /add-gmail - Gmail integration
 │       ├── add-voice-transcription/    # /add-voice-transcription - Whisper
 │       ├── x-integration/SKILL.md      # /x-integration - X/Twitter
@@ -150,7 +148,6 @@ nanoclaw/
 │       └── *.md                   # Files created by the agent
 │
 ├── store/                         # Local data (gitignored)
-│   ├── auth/                      # WhatsApp authentication state
 │   └── messages.db                # SQLite database (messages, chats, scheduled_tasks, task_run_logs, registered_groups, sessions, router_state)
 │
 ├── data/                          # Application state (gitignored)
@@ -176,7 +173,8 @@ Configuration constants are in `src/config.ts`:
 ```typescript
 import path from 'path';
 
-export const ASSISTANT_NAME = process.env.ASSISTANT_NAME || 'Andy';
+export const ASSISTANT_NAME = process.env.ASSISTANT_NAME || 'nano';
+export const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
 
@@ -196,17 +194,17 @@ export const MAX_CONCURRENT_CONTAINERS = Math.max(1, parseInt(process.env.MAX_CO
 export const TRIGGER_PATTERN = new RegExp(`^@${ASSISTANT_NAME}\\b`, 'i');
 ```
 
-**Note:** Paths must be absolute for Apple Container volume mounts to work correctly.
+**Note:** Paths must be absolute for Docker volume mounts to work correctly.
 
 ### Container Configuration
 
 Groups can have additional directories mounted via `containerConfig` in the SQLite `registered_groups` table (stored as JSON in the `container_config` column). Example registration:
 
 ```typescript
-registerGroup("1234567890@g.us", {
+registerGroup("guild:123456789012345678", {
   name: "Dev Team",
   folder: "dev-team",
-  trigger: "@Andy",
+  trigger: "@nano",
   added_at: new Date().toISOString(),
   containerConfig: {
     additionalMounts: [
@@ -223,7 +221,7 @@ registerGroup("1234567890@g.us", {
 
 Additional mounts appear at `/workspace/extra/{containerPath}` inside the container.
 
-**Apple Container mount syntax note:** Read-write mounts use `-v host:container`, but readonly mounts require `--mount "type=bind,source=...,target=...,readonly"` (the `:ro` suffix doesn't work).
+**Docker mount syntax:** Read-write mounts use `-v host:container`, readonly mounts use `-v host:container:ro`.
 
 ### Claude Authentication
 
@@ -240,7 +238,7 @@ The token can be extracted from `~/.claude/.credentials.json` if you're logged i
 ANTHROPIC_API_KEY=sk-ant-api03-...
 ```
 
-Only the authentication variables (`CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY`) are extracted from `.env` and written to `data/env/env`, then mounted into the container at `/workspace/env-dir/env` and sourced by the entrypoint script. This ensures other environment variables in `.env` are not exposed to the agent. This workaround is needed because Apple Container loses `-e` environment variables when using `-i` (interactive mode with piped stdin).
+Only the authentication variables (`CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY`) are extracted from `.env` and written to `data/env/env`, then mounted into the container at `/workspace/env-dir/env` and sourced by the entrypoint script. This ensures other environment variables in `.env` are not exposed to the agent and keeps credentials out of process listings.
 
 ### Changing the Assistant Name
 
@@ -314,10 +312,10 @@ Sessions enable conversation continuity - Claude remembers what you talked about
 ### Incoming Message Flow
 
 ```
-1. User sends WhatsApp message
+1. User sends Discord message
    │
    ▼
-2. Baileys receives message via WhatsApp Web protocol
+2. discord.js receives message via Discord gateway
    │
    ▼
 3. Message stored in SQLite (store/messages.db)
@@ -327,7 +325,7 @@ Sessions enable conversation continuity - Claude remembers what you talked about
    │
    ▼
 5. Router checks:
-   ├── Is chat_jid in registered groups (SQLite)? → No: ignore
+   ├── Is guild_id in registered groups (SQLite)? → No: ignore
    └── Does message match trigger pattern? → No: store but don't process
    │
    ▼
@@ -349,7 +347,7 @@ Sessions enable conversation continuity - Claude remembers what you talked about
    └── Uses tools as needed (search, email, etc.)
    │
    ▼
-9. Router prefixes response with assistant name and sends via WhatsApp
+9. Router prefixes response with assistant name and sends via Discord
    │
    ▼
 10. Router updates last agent timestamp and saves session ID
@@ -357,10 +355,10 @@ Sessions enable conversation continuity - Claude remembers what you talked about
 
 ### Trigger Word Matching
 
-Messages must start with the trigger pattern (default: `@Andy`):
-- `@Andy what's the weather?` → ✅ Triggers Claude
-- `@andy help me` → ✅ Triggers (case insensitive)
-- `Hey @Andy` → ❌ Ignored (trigger not at start)
+Messages must start with the trigger pattern (default: `@nano`). Discord @mentions are translated to trigger format before matching:
+- `@nano what's the weather?` → ✅ Triggers Claude
+- `@nano help me` → ✅ Triggers (case insensitive)
+- `Hey @nano` → ❌ Ignored (trigger not at start)
 - `What's up?` → ❌ Ignored (no trigger)
 
 ### Conversation Catch-Up
@@ -370,7 +368,7 @@ When a triggered message arrives, the agent receives all messages since its last
 ```
 [Jan 31 2:32 PM] John: hey everyone, should we do pizza tonight?
 [Jan 31 2:33 PM] Sarah: sounds good to me
-[Jan 31 2:35 PM] John: @Andy what toppings do you recommend?
+[Jan 31 2:35 PM] John: @nano what toppings do you recommend?
 ```
 
 This allows the agent to understand the conversation context even if it wasn't mentioned in every message.
@@ -383,16 +381,16 @@ This allows the agent to understand the conversation context even if it wasn't m
 
 | Command | Example | Effect |
 |---------|---------|--------|
-| `@Assistant [message]` | `@Andy what's the weather?` | Talk to Claude |
+| `@nano [message]` | `@nano what's the weather?` | Talk to Claude |
 
 ### Commands Available in Main Channel Only
 
 | Command | Example | Effect |
 |---------|---------|--------|
-| `@Assistant add group "Name"` | `@Andy add group "Family Chat"` | Register a new group |
-| `@Assistant remove group "Name"` | `@Andy remove group "Work Team"` | Unregister a group |
-| `@Assistant list groups` | `@Andy list groups` | Show registered groups |
-| `@Assistant remember [fact]` | `@Andy remember I prefer dark mode` | Add to global memory |
+| `@nano add group "Name"` | `@nano add group "Family Chat"` | Register a new group |
+| `@nano remove group "Name"` | `@nano remove group "Work Team"` | Unregister a group |
+| `@nano list groups` | `@nano list groups` | Show registered groups |
+| `@nano remember [fact]` | `@nano remember I prefer dark mode` | Add to global memory |
 
 ---
 
@@ -418,7 +416,7 @@ NanoClaw has a built-in scheduler that runs tasks as full agents in their group'
 ### Creating a Task
 
 ```
-User: @Andy remind me every Monday at 9am to review the weekly metrics
+User: @nano remind me every Monday at 9am to review the weekly metrics
 
 Claude: [calls mcp__nanoclaw__schedule_task]
         {
@@ -433,7 +431,7 @@ Claude: Done! I'll remind you every Monday at 9am.
 ### One-Time Tasks
 
 ```
-User: @Andy at 5pm today, send me a summary of today's emails
+User: @nano at 5pm today, send me a summary of today's emails
 
 Claude: [calls mcp__nanoclaw__schedule_task]
         {
@@ -446,14 +444,14 @@ Claude: [calls mcp__nanoclaw__schedule_task]
 ### Managing Tasks
 
 From any group:
-- `@Andy list my scheduled tasks` - View tasks for this group
-- `@Andy pause task [id]` - Pause a task
-- `@Andy resume task [id]` - Resume a paused task
-- `@Andy cancel task [id]` - Delete a task
+- `@nano list my scheduled tasks` - View tasks for this group
+- `@nano pause task [id]` - Pause a task
+- `@nano resume task [id]` - Resume a paused task
+- `@nano cancel task [id]` - Delete a task
 
 From main channel:
-- `@Andy list all tasks` - View tasks from all groups
-- `@Andy schedule task for "Family Chat": [prompt]` - Schedule for another group
+- `@nano list all tasks` - View tasks from all groups
+- `@nano schedule task for "Family Chat": [prompt]` - Schedule for another group
 
 ---
 
@@ -473,7 +471,7 @@ The `nanoclaw` MCP server is created dynamically per agent call with the current
 | `pause_task` | Pause a task |
 | `resume_task` | Resume a paused task |
 | `cancel_task` | Delete a task |
-| `send_message` | Send a WhatsApp message to the group |
+| `send_message` | Send a Discord message to the group |
 
 ---
 
@@ -484,10 +482,10 @@ NanoClaw runs as a single macOS launchd service.
 ### Startup Sequence
 
 When NanoClaw starts, it:
-1. **Ensures Apple Container system is running** - Automatically starts it if needed; kills orphaned NanoClaw containers from previous runs
+1. **Ensures Docker is running** - Checks Docker daemon; kills orphaned NanoClaw containers from previous runs
 2. Initializes the SQLite database (migrates from JSON files if they exist)
 3. Loads state from SQLite (registered groups, sessions, router state)
-4. Connects to WhatsApp (on `connection.open`):
+4. Connects to Discord (on `ready` event):
    - Starts the scheduler loop
    - Starts the IPC watcher for container messages
    - Sets up the per-group queue with `processGroupMessages`
@@ -522,7 +520,7 @@ When NanoClaw starts, it:
         <key>HOME</key>
         <string>{{HOME}}</string>
         <key>ASSISTANT_NAME</key>
-        <string>Andy</string>
+        <string>nano</string>
     </dict>
     <key>StandardOutPath</key>
     <string>{{PROJECT_ROOT}}/logs/nanoclaw.log</string>
@@ -557,16 +555,16 @@ tail -f logs/nanoclaw.log
 
 ### Container Isolation
 
-All agents run inside Apple Container (lightweight Linux VMs), providing:
+All agents run inside Docker containers, providing:
 - **Filesystem isolation**: Agents can only access mounted directories
-- **Safe Bash access**: Commands run inside the container, not on your Mac
+- **Safe Bash access**: Commands run inside the container, not on your host
 - **Network isolation**: Can be configured per-container if needed
 - **Process isolation**: Container processes can't affect the host
 - **Non-root user**: Container runs as unprivileged `node` user (uid 1000)
 
 ### Prompt Injection Risk
 
-WhatsApp messages could contain malicious instructions attempting to manipulate Claude's behavior.
+Discord messages could contain malicious instructions attempting to manipulate Claude's behavior.
 
 **Mitigations:**
 - Container isolation limits blast radius
@@ -587,7 +585,7 @@ WhatsApp messages could contain malicious instructions attempting to manipulate 
 | Credential | Storage Location | Notes |
 |------------|------------------|-------|
 | Claude CLI Auth | data/sessions/{group}/.claude/ | Per-group isolation, mounted to /home/node/.claude/ |
-| WhatsApp Session | store/auth/ | Auto-created, persists ~20 days |
+| Discord Bot Token | .env (DISCORD_BOT_TOKEN) | Required for Discord gateway connection |
 
 ### File Permissions
 
@@ -605,12 +603,12 @@ chmod 700 groups/
 | Issue | Cause | Solution |
 |-------|-------|----------|
 | No response to messages | Service not running | Check `launchctl list | grep nanoclaw` |
-| "Claude Code process exited with code 1" | Apple Container failed to start | Check logs; NanoClaw auto-starts container system but may fail |
+| "Claude Code process exited with code 1" | Docker not running | Check logs; ensure Docker daemon is started |
 | "Claude Code process exited with code 1" | Session mount path wrong | Ensure mount is to `/home/node/.claude/` not `/root/.claude/` |
 | Session not continuing | Session ID not saved | Check SQLite: `sqlite3 store/messages.db "SELECT * FROM sessions"` |
 | Session not continuing | Mount path mismatch | Container user is `node` with HOME=/home/node; sessions must be at `/home/node/.claude/` |
-| "QR code expired" | WhatsApp session expired | Delete store/auth/ and restart |
-| "No groups registered" | Haven't added groups | Use `@Andy add group "Name"` in main |
+| "Discord disconnected" | Bot token invalid or revoked | Verify DISCORD_BOT_TOKEN in .env and restart |
+| "No groups registered" | Haven't added groups | Use `@nano add group "Name"` in main |
 
 ### Log Location
 

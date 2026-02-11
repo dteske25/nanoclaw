@@ -13,75 +13,75 @@ beforeEach(() => {
 describe('JID ownership patterns', () => {
   // These test the patterns that will become ownsJid() on the Channel interface
 
-  it('WhatsApp group JID: ends with @g.us', () => {
-    const jid = '12345678@g.us';
-    expect(jid.endsWith('@g.us')).toBe(true);
+  it('Discord guild JID: starts with guild:', () => {
+    const jid = 'guild:123456789012345678';
+    expect(jid.startsWith('guild:')).toBe(true);
   });
 
-  it('WhatsApp DM JID: ends with @s.whatsapp.net', () => {
-    const jid = '12345678@s.whatsapp.net';
-    expect(jid.endsWith('@s.whatsapp.net')).toBe(true);
+  it('Discord DM JID: starts with dm:', () => {
+    const jid = 'dm:123456789012345678';
+    expect(jid.startsWith('dm:')).toBe(true);
   });
 
-  it('unknown JID format: does not match WhatsApp patterns', () => {
+  it('unknown JID format: does not match Discord patterns', () => {
     const jid = 'unknown:12345';
-    expect(jid.endsWith('@g.us')).toBe(false);
-    expect(jid.endsWith('@s.whatsapp.net')).toBe(false);
+    expect(jid.startsWith('guild:')).toBe(false);
+    expect(jid.startsWith('dm:')).toBe(false);
   });
 });
 
 // --- getAvailableGroups ---
 
 describe('getAvailableGroups', () => {
-  it('returns only @g.us JIDs', () => {
-    storeChatMetadata('group1@g.us', '2024-01-01T00:00:01.000Z', 'Group 1');
-    storeChatMetadata('user@s.whatsapp.net', '2024-01-01T00:00:02.000Z', 'User DM');
-    storeChatMetadata('group2@g.us', '2024-01-01T00:00:03.000Z', 'Group 2');
+  it('returns only guild: JIDs', () => {
+    storeChatMetadata('guild:111', '2024-01-01T00:00:01.000Z', 'Server 1');
+    storeChatMetadata('dm:222', '2024-01-01T00:00:02.000Z', 'User DM');
+    storeChatMetadata('guild:333', '2024-01-01T00:00:03.000Z', 'Server 2');
 
     const groups = getAvailableGroups();
     expect(groups).toHaveLength(2);
-    expect(groups.every((g) => g.jid.endsWith('@g.us'))).toBe(true);
+    expect(groups.every((g) => g.jid.startsWith('guild:'))).toBe(true);
   });
 
   it('excludes __group_sync__ sentinel', () => {
     storeChatMetadata('__group_sync__', '2024-01-01T00:00:00.000Z');
-    storeChatMetadata('group@g.us', '2024-01-01T00:00:01.000Z', 'Group');
+    storeChatMetadata('guild:111', '2024-01-01T00:00:01.000Z', 'Server');
 
     const groups = getAvailableGroups();
     expect(groups).toHaveLength(1);
-    expect(groups[0].jid).toBe('group@g.us');
+    expect(groups[0].jid).toBe('guild:111');
   });
 
   it('marks registered groups correctly', () => {
-    storeChatMetadata('reg@g.us', '2024-01-01T00:00:01.000Z', 'Registered');
-    storeChatMetadata('unreg@g.us', '2024-01-01T00:00:02.000Z', 'Unregistered');
+    storeChatMetadata('guild:111', '2024-01-01T00:00:01.000Z', 'Registered');
+    storeChatMetadata('guild:222', '2024-01-01T00:00:02.000Z', 'Unregistered');
 
     _setRegisteredGroups({
-      'reg@g.us': {
+      'guild:111': {
         name: 'Registered',
         folder: 'registered',
-        trigger: '@Andy',
+        trigger: '@nano',
         added_at: '2024-01-01T00:00:00.000Z',
       },
     });
 
     const groups = getAvailableGroups();
-    const reg = groups.find((g) => g.jid === 'reg@g.us');
-    const unreg = groups.find((g) => g.jid === 'unreg@g.us');
+    const reg = groups.find((g) => g.jid === 'guild:111');
+    const unreg = groups.find((g) => g.jid === 'guild:222');
 
     expect(reg?.isRegistered).toBe(true);
     expect(unreg?.isRegistered).toBe(false);
   });
 
   it('returns groups ordered by most recent activity', () => {
-    storeChatMetadata('old@g.us', '2024-01-01T00:00:01.000Z', 'Old');
-    storeChatMetadata('new@g.us', '2024-01-01T00:00:05.000Z', 'New');
-    storeChatMetadata('mid@g.us', '2024-01-01T00:00:03.000Z', 'Mid');
+    storeChatMetadata('guild:111', '2024-01-01T00:00:01.000Z', 'Old');
+    storeChatMetadata('guild:222', '2024-01-01T00:00:05.000Z', 'New');
+    storeChatMetadata('guild:333', '2024-01-01T00:00:03.000Z', 'Mid');
 
     const groups = getAvailableGroups();
-    expect(groups[0].jid).toBe('new@g.us');
-    expect(groups[1].jid).toBe('mid@g.us');
-    expect(groups[2].jid).toBe('old@g.us');
+    expect(groups[0].jid).toBe('guild:222');
+    expect(groups[1].jid).toBe('guild:333');
+    expect(groups[2].jid).toBe('guild:111');
   });
 
   it('returns empty array when no chats exist', () => {
