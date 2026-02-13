@@ -22,6 +22,8 @@ interface GroupState {
   containerName: string | null;
   groupFolder: string | null;
   retryCount: number;
+  lastFailureTime: number;
+  consecutiveFailures: number;
 }
 
 export class GroupQueue {
@@ -43,6 +45,8 @@ export class GroupQueue {
         containerName: null,
         groupFolder: null,
         retryCount: 0,
+        lastFailureTime: 0,
+        consecutiveFailures: 0,
       };
       this.groups.set(groupJid, state);
     }
@@ -176,6 +180,7 @@ export class GroupQueue {
         const success = await this.processMessagesFn(groupJid);
         if (success) {
           state.retryCount = 0;
+          state.consecutiveFailures = 0; // Reset circuit breaker on success
         } else {
           this.scheduleRetry(groupJid, state);
         }
@@ -219,6 +224,34 @@ export class GroupQueue {
 
   private scheduleRetry(groupJid: string, state: GroupState): void {
     state.retryCount++;
+
+    // Circuit breaker: Track consecutive failures over time
+    const now = Date.now();
+    if (state.lastFailureTime && now - state.lastFailureTime < 300000) {
+      // Within 5 minutes of last failure
+      state.consecutiveFailures++;
+    } else {
+      // More than 5 minutes since last failure, reset counter
+      state.consecutiveFailures = 1;
+    }
+    state.lastFailureTime = now;
+
+    // Circuit breaker: Stop if too many consecutive failures
+    if (state.consecutiveFailures > 10) {
+      logger.error(
+        {
+          groupJid,
+          consecutiveFailures: state.consecutiveFailures,
+          failureWindowMinutes: Math.round((now - state.lastFailureTime) / 60000),
+        },
+        'Circuit breaker: too many consecutive failures, stopping retries',
+      );
+      state.retryCount = 0;
+      state.consecutiveFailures = 0;
+      state.pendingMessages = false; // Clear to break the loop
+      return;
+    }
+
     if (state.retryCount > MAX_RETRIES) {
       logger.error(
         { groupJid, retryCount: state.retryCount },
@@ -254,6 +287,13 @@ export class GroupQueue {
 
     // Then pending messages
     if (state.pendingMessages) {
+      // Safety: If we just failed (retryCount > 0), don't immediately drain
+      // Let the scheduled retry handle it instead to prevent double-processing
+      if (state.retryCount > 0) {
+        logger.debug({ groupJid }, 'Skipping drain - retry already scheduled');
+        state.pendingMessages = false; // Clear the flag
+        return;
+      }
       this.runForGroup(groupJid, 'drain');
       return;
     }

@@ -6,7 +6,15 @@
       "Bash(npm test:*)",
       "Bash(docker:*)",
       "Bash(docker info:*)",
-      "Bash(./container/build.sh:*)"
+      "Bash(./container/build.sh:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:mcpservers.org)",
+      "Bash(systemctl --user restart:*)",
+      "Bash(systemctl:*)"
     ]
-  }
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "google-calendar"
+  ]
 }

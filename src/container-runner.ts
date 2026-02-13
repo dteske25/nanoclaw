@@ -192,6 +192,16 @@ function buildVolumeMounts(
     readonly: true,
   });
 
+  // Mount MCP servers directory for external MCP integrations
+  const mcpServersDir = path.join(projectRoot, 'mcp-servers');
+  if (fs.existsSync(mcpServersDir)) {
+    mounts.push({
+      hostPath: mcpServersDir,
+      containerPath: '/workspace/mcp-servers',
+      readonly: true,
+    });
+  }
+
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(

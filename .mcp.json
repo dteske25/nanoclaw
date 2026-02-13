@@ -1,3 +1,11 @@
 {
-  "mcpServers": {}
+  "mcpServers": {
+    "google-calendar": {
+      "command": "node",
+      "args": ["/workspace/mcp-servers/google-calendar/build/index.js"],
+      "env": {
+        "NODE_ENV": "production"
+      }
+    }
+  }
 }

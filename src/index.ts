@@ -125,7 +125,21 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
 
-  const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
+  // Initialize empty timestamps to prevent infinite history fetch
+  if (!lastAgentTimestamp[chatJid] || lastAgentTimestamp[chatJid] === '') {
+    logger.warn(
+      { chatJid, group: group.name },
+      'processGroupMessages called with empty timestamp - initializing to avoid infinite loop',
+    );
+    // Set to current time to avoid fetching all history
+    // This is a safety measure - normally timestamps should be initialized in message loop
+    const now = new Date().toISOString();
+    lastAgentTimestamp[chatJid] = now;
+    saveState();
+    return true; // Skip this processing cycle, wait for next trigger
+  }
+
+  const sinceTimestamp = lastAgentTimestamp[chatJid];
   const missedMessages = getMessagesSince(
     chatJid,
     sinceTimestamp,
@@ -185,7 +199,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
 
     if (result.status === 'error') {
-      hadError = true;
+      // Don't count timeouts as errors - they're expected after agent responds
+      const isTimeout = result.error?.includes('Container timed out');
+      if (!isTimeout) {
+        hadError = true;
+      }
     }
   });
 
@@ -194,9 +212,22 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   if (output === 'error' || hadError) {
     // Roll back cursor so retries can re-process these messages
-    lastAgentTimestamp[chatJid] = previousCursor;
-    saveState();
-    logger.warn({ group: group.name }, 'Agent error, rolled back message cursor for retry');
+    // But don't roll back to empty string - that causes infinite loops!
+    if (previousCursor && previousCursor !== '') {
+      lastAgentTimestamp[chatJid] = previousCursor;
+      saveState();
+      logger.warn(
+        { group: group.name },
+        'Agent error, rolled back message cursor for retry',
+      );
+    } else {
+      // If previousCursor was empty, don't roll back at all
+      // This prevents infinite loop - we'll just skip this batch
+      logger.warn(
+        { group: group.name, chatJid },
+        'Skipping cursor rollback to prevent infinite loop (previousCursor was empty)',
+      );
+    }
     return false;
   }
 
@@ -268,6 +299,18 @@ async function runAgent(
     }
 
     if (output.status === 'error') {
+      // Timeouts are expected behavior after agent finishes responding
+      // Don't treat them as errors that should trigger message reprocessing
+      const isTimeout = output.error?.includes('Container timed out');
+
+      if (isTimeout) {
+        logger.info(
+          { group: group.name },
+          'Container timed out after processing (expected behavior)',
+        );
+        return 'success';
+      }
+
       logger.error(
         { group: group.name, error: output.error },
         'Container agent error',
@@ -335,11 +378,34 @@ async function startMessageLoop(): Promise<void> {
             if (!hasTrigger) continue;
           }
 
+          // Initialize empty/missing timestamps to prevent fetching all message history
+          if (!lastAgentTimestamp[chatJid] || lastAgentTimestamp[chatJid] === '') {
+            // Set to the timestamp of the first trigger message we just received
+            // This way we process THIS message and forward, not all history
+            const firstTriggerMsg = groupMessages.find((m) =>
+              TRIGGER_PATTERN.test(m.content.trim()),
+            );
+            if (firstTriggerMsg) {
+              lastAgentTimestamp[chatJid] = firstTriggerMsg.timestamp;
+              saveState();
+              logger.info({ chatJid }, 'Initialized lastAgentTimestamp for new chat');
+            } else {
+              // No trigger in current batch, set to latest message timestamp
+              lastAgentTimestamp[chatJid] =
+                groupMessages[groupMessages.length - 1].timestamp;
+              saveState();
+              logger.info(
+                { chatJid },
+                'Initialized lastAgentTimestamp to latest message',
+              );
+            }
+          }
+
           // Pull all messages since lastAgentTimestamp so non-trigger
           // context that accumulated between triggers is included.
           const allPending = getMessagesSince(
             chatJid,
-            lastAgentTimestamp[chatJid] || '',
+            lastAgentTimestamp[chatJid],
             ASSISTANT_NAME,
           );
           const messagesToSend =
@@ -373,7 +439,19 @@ async function startMessageLoop(): Promise<void> {
  */
 function recoverPendingMessages(): void {
   for (const [chatJid, group] of Object.entries(registeredGroups)) {
-    const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
+    // Initialize empty timestamps to prevent infinite history fetch
+    if (!lastAgentTimestamp[chatJid] || lastAgentTimestamp[chatJid] === '') {
+      logger.warn(
+        { chatJid, group: group.name },
+        'Recovery: empty timestamp detected, initializing to current time',
+      );
+      // Set to current time to avoid fetching all history on recovery
+      lastAgentTimestamp[chatJid] = new Date().toISOString();
+      saveState();
+      continue; // Skip recovery for this group, wait for next trigger
+    }
+
+    const sinceTimestamp = lastAgentTimestamp[chatJid];
     const pending = getMessagesSince(chatJid, sinceTimestamp, ASSISTANT_NAME);
     if (pending.length > 0) {
       logger.info(
