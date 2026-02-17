@@ -56,6 +56,22 @@ interface SDKUserMessage {
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
+const USER_MCP_JSON = path.join(process.env.HOME || '/home/node', '.claude', 'mcp.json');
+
+/**
+ * Load MCP server configs from the user-level mcp.json file.
+ * These get merged with the programmatic mcpServers in the query call.
+ */
+function loadUserMcpServers(): Record<string, { command: string; args: string[]; env?: Record<string, string> }> {
+  try {
+    if (!fs.existsSync(USER_MCP_JSON)) return {};
+    const config = JSON.parse(fs.readFileSync(USER_MCP_JSON, 'utf-8'));
+    return config.mcpServers || {};
+  } catch (err) {
+    log(`Warning: failed to load ${USER_MCP_JSON}: ${err}`);
+    return {};
+  }
+}
 
 /**
  * Push-based async iterable for streaming user messages to the SDK.
@@ -388,7 +404,8 @@ async function runQuery(
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__nanoclaw__*'
+        'mcp__nanoclaw__*',
+        ...Object.keys(loadUserMcpServers()).map(name => `mcp__${name}__*`),
       ],
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
@@ -403,6 +420,7 @@ async function runQuery(
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
         },
+        ...loadUserMcpServers(),
       },
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook()] }]

@@ -10,7 +10,9 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:mcpservers.org)",
       "Bash(systemctl --user restart:*)",
-      "Bash(systemctl:*)"
+      "Bash(systemctl:*)",
+      "Bash(xargs:*)",
+      "Bash(journalctl:*)"
     ]
   },
   "enableAllProjectMcpServers": true,
